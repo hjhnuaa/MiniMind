@@ -10,6 +10,10 @@ VOCAB_SIZE = 6400
 SPECIAL_TOKENS_NUM = 36
 
 def get_texts(data_path):
+    """从 jsonl 对话数据中提取训练文本流。
+
+    只读取前 10000 行用于快速实验，将每条样本中的多轮 content 按换行拼接后逐条 yield。
+    """
     with open(data_path, 'r', encoding='utf-8', errors='ignore') as f:
         for i, line in enumerate(f):
             if i >= 10000: break # 选10000行测试
@@ -22,7 +26,14 @@ def get_texts(data_path):
                 continue
 
 def train_tokenizer(data_path, tokenizer_dir, vocab_size, special_tokens_num=SPECIAL_TOKENS_NUM):
+    """训练并导出 MiniMind 风格的 BPE + ByteLevel tokenizer。
+
+    会构造基础特殊 token、工具调用 token 与预留 buffer token，训练后保存
+    tokenizer.json 与 tokenizer_config.json，供 Transformers 直接加载使用。
+    """
+    # BPE 负责“学子词合并规则”
     tokenizer = Tokenizer(models.BPE())
+    # ByteLevel 负责“先把文本稳定切到字节层面再做统计”，对中英混合、奇怪字符更稳
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     
     special_tokens_list = [
@@ -46,11 +57,14 @@ def train_tokenizer(data_path, tokenizer_dir, vocab_size, special_tokens_num=SPE
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
         special_tokens=all_special_tokens
     )
+    # 逐条提供样本
     texts = get_texts(data_path)
+    # 训练 BPE tokenizer，过程中会自动统计字节级别的 token 合并规则，最终形成一个稳定的 tokenizer.json
     tokenizer.train_from_iterator(texts, trainer=trainer)
     tokenizer.decoder = decoders.ByteLevel()
     tokenizer.add_special_tokens(special_tokens_list)
 
+    # 保存 tokenizer 文件，构造 tokenizer_config.json 以供 Transformers 加载时使用
     os.makedirs(tokenizer_dir, exist_ok=True)
     tokenizer.save(os.path.join(tokenizer_dir, "tokenizer.json"))
     tokenizer.model.save(tokenizer_dir)
@@ -106,6 +120,11 @@ def train_tokenizer(data_path, tokenizer_dir, vocab_size, special_tokens_num=SPE
     print("Tokenizer training completed.")
 
 def eval_tokenizer(tokenizer_dir):
+    """对训练后的 tokenizer 做快速功能与压缩率检查。
+
+    包含 chat_template 编解码一致性测试、字符/Token 压缩率统计，以及
+    流式解码场景下的字节缓冲可解码性检查。
+    """
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
     messages = [
